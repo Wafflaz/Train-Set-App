@@ -1,0 +1,186 @@
+/* The Footplate: a 1950s British steam locomotive look.
+   Brunswick green, black and orange lining, cream enamel plates, polished brass, cab gauges. */
+:root {
+  color-scheme: dark;
+  --green: #1d4a35; --green-d: #123325; --green-dd: #0b2017;
+  --cream: #efe4c4; --cream-d: #cdbf94; --black: #14110d;
+  --gold: #c8a24a; --gold-d: #8d6a1c; --orange: #d9772b; --red: #a8322a;
+  --brass: linear-gradient(135deg, #f3dc92 0%, #b98f2e 38%, #e8cd78 62%, #8d6a1c 100%);
+  --serif: "Rockwell", "Baskerville", "Georgia", serif;
+  --sans: "Gill Sans", "Gill Sans MT", "Optima", "Trebuchet MS", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html { background: var(--green-dd); }
+body {
+  margin: 0; color: var(--cream); font: 14px/1.4 var(--sans);
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.06) 0 2px, transparent 2px 46px),
+    radial-gradient(ellipse at 50% -10%, #226048 0%, var(--green-dd) 62%) fixed;
+  min-height: 100vh;
+}
+.loco { max-width: 1200px; margin: 0 auto; padding: 18px 16px 28px; }
+
+/* ---- nameplate ---- */
+.nameplate-bar { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 22px; }
+.nameplate {
+  position: relative; background: var(--black); border: 3px solid var(--gold); border-radius: 46px / 50%;
+  padding: 8px 46px 10px; box-shadow: 0 0 0 3px var(--black), 0 0 0 5px var(--gold-d), 0 8px 18px rgba(0,0,0,.55), inset 0 0 0 2px #3a2f12;
+  text-align: center;
+}
+.nameplate small { display: block; font: 600 10px var(--sans); letter-spacing: .4em; text-transform: uppercase; color: var(--cream-d); }
+.nameplate h1 {
+  margin: 2px 0 0; font: 700 34px/1.1 var(--serif); letter-spacing: .24em; text-transform: uppercase;
+  background: var(--brass); -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 1px 0 rgba(0,0,0,.8));
+}
+.start-group { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.reg { display: flex; align-items: center; gap: 10px; font: 600 11px var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--cream-d); }
+.reg input { width: 150px; }
+
+/* ---- panels: green enamel with black and orange lining, corner rivets ---- */
+.panel {
+  position: relative; background: linear-gradient(180deg, #235640, #1a4431); border: 3px solid var(--black); border-radius: 10px;
+  padding: 26px 18px 16px; margin-bottom: 20px;
+  box-shadow: inset 0 0 0 4px var(--green), inset 0 0 0 5.5px var(--black), inset 0 0 0 7px var(--orange), 0 8px 18px rgba(0,0,0,.5);
+}
+.panel::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: 8px;
+  background:
+    radial-gradient(circle at 15px 15px, #f0d98a 0 2px, #8d6a1c 3.5px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 15px) 15px, #f0d98a 0 2px, #8d6a1c 3.5px, transparent 4.5px),
+    radial-gradient(circle at 15px calc(100% - 15px), #f0d98a 0 2px, #8d6a1c 3.5px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 15px) calc(100% - 15px), #f0d98a 0 2px, #8d6a1c 3.5px, transparent 4.5px);
+}
+.panel.slim { padding: 22px 22px 12px; }
+.tag {
+  position: absolute; top: -13px; left: 26px; z-index: 2; background: var(--cream); color: var(--black);
+  border: 2px solid var(--black); border-radius: 3px; padding: 2px 14px 1px; box-shadow: 0 0 0 2px var(--cream-d), 0 3px 6px rgba(0,0,0,.5);
+  font: 700 12px var(--serif); letter-spacing: .22em; text-transform: uppercase;
+}
+main { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(340px, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.col { display: flex; flex-direction: column; }
+
+/* ---- buttons ---- */
+button, select { font: inherit; }
+button.enamel, select {
+  background: var(--cream); color: var(--black); border: 2px solid var(--black); border-radius: 4px; padding: 5px 10px;
+  font: 700 11px var(--sans); letter-spacing: .1em; text-transform: uppercase; cursor: pointer;
+  box-shadow: 0 0 0 1.5px var(--cream-d), 0 2px 3px rgba(0,0,0,.5);
+}
+select { text-transform: none; letter-spacing: 0; font-weight: 600; }
+button.enamel:hover:not(:disabled) { box-shadow: 0 0 0 1.5px var(--gold), 0 2px 3px rgba(0,0,0,.5); }
+button.enamel:active:not(:disabled) { transform: translateY(1px); }
+.brass-btn {
+  background: var(--brass); color: var(--black); border: 3px solid var(--black); border-radius: 6px; cursor: pointer;
+  font: 700 15px var(--serif); letter-spacing: .16em; text-transform: uppercase; padding: 12px 24px;
+  box-shadow: 0 0 0 2px var(--gold-d), 0 5px 10px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.55);
+}
+.brass-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.brass-btn:disabled { cursor: default; }
+.brass-btn.lit { background: linear-gradient(135deg, #b9dca0, #5d9a63 45%, #9bd08d); }
+.seg-group, .lever { display: inline-flex; align-items: stretch; }
+.lever { align-items: center; gap: 8px; margin-left: auto; font: 700 11px var(--sans); letter-spacing: .18em; text-transform: uppercase; color: var(--cream-d); }
+.seg {
+  background: #0f2a1d; color: var(--cream-d); border: 2px solid var(--black); padding: 5px 12px; cursor: pointer;
+  font: 700 11px var(--sans); letter-spacing: .1em; text-transform: uppercase;
+}
+.seg:first-of-type { border-radius: 4px 0 0 4px; }
+.seg:last-of-type { border-radius: 0 4px 4px 0; border-left: 0; }
+.seg.active { background: var(--brass); color: var(--black); box-shadow: inset 0 0 6px rgba(0,0,0,.35); }
+
+/* ---- sliders: brass knobs on black grooves with scale marks ---- */
+input[type=range] {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 24px; background: transparent; margin: 0; cursor: pointer;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 8px; border-radius: 4px; border: 1px solid #000;
+  background: linear-gradient(#08130d, #0e2218);
+  box-shadow: 0 1px 0 rgba(239,228,196,.25);
+}
+input[type=range]::-moz-range-track { height: 8px; border-radius: 4px; border: 1px solid #000; background: #0b1b12; }
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 20px; height: 20px; margin-top: -7px; border-radius: 50%; border: 2px solid var(--black);
+  background: radial-gradient(circle at 35% 30%, #fff3bf, #d8b455 45%, #8d6a1c);
+  box-shadow: 0 2px 4px rgba(0,0,0,.6);
+}
+input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--black); background: radial-gradient(circle at 35% 30%, #fff3bf, #d8b455 45%, #8d6a1c); }
+input[type=range]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--orange); outline-offset: 2px; }
+.sl label { display: grid; grid-template-columns: 160px 1fr 52px; gap: 10px; align-items: center; margin: 3px 0; }
+.sl label span { font: 600 11px var(--sans); letter-spacing: .06em; color: var(--cream); }
+.sl output { font: 12px ui-monospace, Menlo, monospace; color: var(--gold); text-align: right; }
+label.check { display: flex; gap: 8px; align-items: center; font: 700 11px var(--sans); letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
+label.check input { accent-color: var(--gold); width: 16px; height: 16px; }
+
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--cream-d); font: 700 11px var(--sans); letter-spacing: .2em; text-transform: uppercase; padding: 4px 0; }
+summary::marker { color: var(--gold); }
+details[open] > summary { color: var(--gold); }
+
+/* ---- signal box (MIDI) ---- */
+.sb-body { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+#midi-status { font: 600 13px var(--sans); color: var(--cream); max-width: 560px; }
+#midi-monitor { margin-top: 8px; font: 12px ui-monospace, Menlo, monospace; color: var(--gold); background: #07140d; border: 2px solid #000; border-radius: 3px; padding: 4px 8px; }
+
+/* ---- camera window ---- */
+.row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.row select { flex: 1; min-width: 140px; }
+.window {
+  background: var(--brass); padding: 10px; border-radius: 12px; border: 3px solid var(--black);
+  box-shadow: 0 0 0 2px var(--gold-d), inset 0 0 8px rgba(0,0,0,.4), 0 6px 12px rgba(0,0,0,.5);
+}
+.video { position: relative; aspect-ratio: 4 / 3; background: #000; border: 3px solid var(--black); border-radius: 6px; overflow: hidden; }
+.video video, .video canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.video canvas#diff { opacity: .65; mix-blend-mode: screen; image-rendering: pixelated; }
+
+.lamps { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 6px; }
+.lamp {
+  --c: #7be08a; position: relative; padding: 4px 12px 3px 28px; background: #1b1a16; color: #8d8873; border: 2px solid #000; border-radius: 3px;
+  font: 700 11px var(--sans); letter-spacing: .14em; text-transform: uppercase; box-shadow: 0 0 0 1.5px #4a4636;
+}
+.lamp::before { content: ""; position: absolute; left: 9px; top: 50%; width: 11px; height: 11px; margin-top: -5.5px; border-radius: 50%; background: #2c2a22; border: 1px solid #000; }
+#lamp-stop { --c: #e45a4c; } #lamp-tunnel { --c: #f2b84a; } #lamp-curve { --c: #f08a3a; }
+.lamp.lit { color: var(--cream); }
+.lamp.lit::before { background: var(--c); box-shadow: 0 0 9px 2px var(--c); }
+
+.gauges { display: flex; justify-content: space-around; gap: 8px; margin: 10px 0; }
+.gauge { width: 31%; max-width: 128px; filter: drop-shadow(0 4px 5px rgba(0,0,0,.55)); }
+.gauge svg { width: 100%; display: block; }
+.needle { transition: transform .22s ease-out; transform: rotate(-135deg); transform-origin: 50px 50px; }
+#readout { font: 12px ui-monospace, Menlo, monospace; color: var(--gold); background: #07140d; border: 2px solid #000; border-radius: 3px; padding: 6px 8px; word-break: break-word; }
+
+/* ---- whistle cab plates ---- */
+.card {
+  position: relative; background: linear-gradient(180deg, #14382a, #102d21); border: 2px solid var(--black); border-radius: 8px;
+  padding: 10px 12px 8px; margin-bottom: 14px; box-shadow: 0 0 0 1.5px var(--cream-d), 0 4px 8px rgba(0,0,0,.4);
+  transition: box-shadow .15s, border-color .15s;
+}
+.card.on { border-color: var(--orange); box-shadow: 0 0 0 1.5px var(--orange), 0 0 18px rgba(217,119,43,.45); }
+.cabplate {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px; background: var(--black);
+  border: 2px solid var(--gold); border-radius: 4px; padding: 5px 12px; box-shadow: inset 0 0 0 2px #000, inset 0 0 0 3px var(--gold-d);
+}
+.cabplate .pl { font: 600 11px var(--serif); letter-spacing: .3em; color: var(--cream-d); white-space: pre; }
+.cabplate strong {
+  font: 700 19px var(--serif); letter-spacing: .14em; text-transform: uppercase;
+  background: var(--brass); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.card-ctl { display: flex; gap: 14px; align-items: center; margin: 10px 0 6px; }
+.card-info { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card-info small { color: var(--cream-d); font-size: 11px; }
+.bind { display: flex; align-items: center; gap: 8px; font: 700 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--cream-d); flex-wrap: wrap; }
+.pull {
+  flex: none; width: 78px; height: 78px; border-radius: 50%; border: 3px solid var(--black); cursor: pointer; touch-action: none; user-select: none;
+  background: radial-gradient(circle at 35% 28%, #fff5c4 0%, #e2c36a 28%, #b98f2e 60%, #6d4f12 100%);
+  box-shadow: 0 0 0 3px var(--gold-d), 0 6px 10px rgba(0,0,0,.6), inset 0 -4px 6px rgba(0,0,0,.35);
+  font: 700 13px var(--serif); letter-spacing: .18em; text-transform: uppercase; color: var(--black);
+  transition: transform .06s, box-shadow .06s;
+}
+.pull:active, .card.on .pull { transform: translateY(3px) scale(.97); box-shadow: 0 0 0 3px var(--gold-d), 0 2px 4px rgba(0,0,0,.6), inset 0 3px 8px rgba(0,0,0,.5); }
+canvas.wave { width: 100%; height: 56px; display: block; margin: 6px 0 2px; background: #0a1c13; border: 2px solid #000; border-radius: 4px; }
+.loopinfo { font: 11px ui-monospace, Menlo, monospace; color: var(--cream-d); min-height: 14px; }
+.card details .sl { margin-bottom: 8px; }
+.card details .sl label { grid-template-columns: 120px 1fr 52px; }
+
+footer { margin-top: 8px; text-align: center; color: var(--cream-d); font: 600 10px var(--sans); letter-spacing: .24em; text-transform: uppercase; opacity: .75; }
+@media (max-width: 520px) { .sl label { grid-template-columns: 110px 1fr 44px; } .nameplate h1 { font-size: 24px; } .nameplate { padding: 8px 28px 10px; } }
