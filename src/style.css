@@ -154,7 +154,7 @@ details[open] > summary { color: var(--gold); }
 .gauge { width: 31%; max-width: 128px; aspect-ratio: 1; border-radius: 50%; box-shadow: 0 4px 8px rgba(0,0,0,.55); }
 .gauge svg { width: 100%; display: block; }
 .needle { transition: transform .22s ease-out; transform: rotate(-135deg); transform-origin: 50px 50px; }
-#readout { font: 12px ui-monospace, Menlo, monospace; color: var(--gold); background: #07140d; border: 2px solid #000; border-radius: 3px; padding: 6px 8px; word-break: break-word; }
+#readout { white-space: pre-line; font: 12px ui-monospace, Menlo, monospace; color: var(--gold); background: #07140d; border: 2px solid #000; border-radius: 3px; padding: 6px 8px; word-break: break-word; }
 
 /* ---- whistle cab plates ---- */
 .card {
@@ -205,3 +205,12 @@ footer { margin-top: 8px; text-align: center; color: var(--cream-d); font: 600 1
 #phone-status { font: 600 12px var(--sans); color: var(--cream); }
 .card.track { border-color: var(--gold); }
 .card.track .cabplate::after { content: "on the track"; font: 700 9px var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--orange); align-self: center; }
+
+/* ---- trains, mixing desk ---- */
+.slotbox { border: 2px solid var(--gold); border-radius: 6px; padding: 8px 10px; margin: 0 0 10px; background: rgba(0,0,0,.2); }
+.slotbox[hidden] { display: none; }
+.slot-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.slot-head b { font: 700 13px var(--serif); letter-spacing: .16em; text-transform: uppercase; }
+.slotbox .mini { margin: 3px 0; }
+.mixhead { margin: 12px 0 4px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: var(--gold); }
+#mixer .sl label { grid-template-columns: 190px 1fr 52px; }

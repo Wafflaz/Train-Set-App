@@ -1,4 +1,4 @@
-import type { Tunnel } from './motion';
+import type { Zone as Tunnel } from './motion';
 
 // Simulated train on a loop so the whole chain (tracking, chuffs, steam, tunnel) can be tried without hardware.
 // Cycle: rest, accelerate, run, brake, rest. The train is hidden while behind the tunnel wall on the left.

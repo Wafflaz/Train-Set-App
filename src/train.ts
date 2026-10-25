@@ -17,12 +17,14 @@ export interface TrainSettings {
   perWagon: number;      // length of one wagon compared with the loco (for counting wagons by length)
   panAmt: number;        // 0 = centred, 1 = full left/right as the train crosses the set
   panDir: number;        // which way across the camera picture is the listener's right: 0 right, 1 down, 2 left, 3 up
+  lead: number;          // seconds the picture lags behind the real train (video link + analysis): positions are projected this far ahead
+  holdTime: number;      // seconds a train hidden by a house or prop keeps running before it counts as stopped
 }
 
 export const DEFAULT_TRAIN: TrainSettings = {
   fullSpeed: 0.3, minRate: 1.6, maxRate: 7.5, stopSpeed: 0.025, stopDelay: 0.9,
-  chuffVol: 0.8, idleVol: 0.45, steamVol: 0.5, squealVol: 0.28, curveThr: 1.5, rockVol: 0.5,
-  rollVol: 0.55, perWagon: 0.45, panAmt: 0.8, panDir: 1,
+  chuffVol: 1.7, idleVol: 0.7, steamVol: 0.9, squealVol: 0.28, curveThr: 1.5, rockVol: 0.6,
+  rollVol: 0.9, perWagon: 0.45, panAmt: 0.8, panDir: 1, lead: 0.3, holdTime: 4,
 };
 
 export type Mode = 'stopped' | 'moving';
@@ -39,7 +41,6 @@ export class TrainSound {
   wagons = 0;            // set by whoever counts them (manual buttons or the length estimator)
   beat = 1;              // the loco's own chuff-rate multiplier
   private lastSqueal = 0;
-  private sqLevel = -1;
   private speed = 0;
   private belowSince = 0;
   private aboveSince = 0;
@@ -48,26 +49,52 @@ export class TrainSound {
   private nextChuff = 0;
   private clackAcc = 0;
   private timer = 0;
+  private sqLevel = -1;
   private lo = -0.1;
   private hi = 0.1;
   private seen = false;
   private lastPan = 0;
   private lastT = 0;
 
-  constructor(private audio: AudioEngine, public s: TrainSettings) {}
+  /** engine: which locomotive this train is (its own chuffs, steam, channel). */
+  constructor(private audio: AudioEngine, public s: TrainSettings, public engine: string) {}
 
   start() {
-    this.lo = -0.1; this.hi = 0.1; this.seen = false; this.lastT = 0;
-    this.audio.setIdle(this.s.idleVol, 1.5);
+    this.lo = -0.1; this.hi = 0.1; this.seen = false; this.lastT = 0; this.sqLevel = -1;
+    this.audio.setIdle(this.engine, this.s.idleVol, 1.5);
+    clearInterval(this.timer);
     this.timer = window.setInterval(() => this.schedule(), 25);
+  }
+
+  /** put this train's channel back to neutral: used when stopping or when the slot is given another locomotive */
+  private neutral(engine: string) {
+    this.audio.setIdle(engine, 0, 0.4);
+    this.audio.setMuffle(engine, 0);
+    this.audio.setSqueal(engine, 0, 1);
+    this.audio.setPan(engine, 0);
+    this.audio.stopSteam(engine, 0.4);
   }
 
   stop() {
     clearInterval(this.timer);
-    this.audio.setIdle(0, 0.5);
-    this.audio.setMuffle(0);
-    this.audio.setSqueal(0, 1);
-    this.audio.setPan(0);
+    this.neutral(this.engine);
+    this.mode = 'stopped'; this.rate = 0;
+  }
+
+  /** a different locomotive now runs in this slot */
+  setEngine(id: string) {
+    if (id === this.engine) return;
+    const running = this.timer !== 0;
+    this.neutral(this.engine);
+    this.engine = id;
+    this.sqLevel = -1;
+    this.pan = 99;
+    if (running) this.audio.setIdle(id, this.mode === 'stopped' ? this.s.idleVol : this.s.idleVol * 0.2, 0.5);
+  }
+
+  /** mixer fader moved: apply the new idle level now rather than at the next change of state */
+  refresh() {
+    if (this.timer) this.audio.setIdle(this.engine, this.mode === 'stopped' ? this.s.idleVol : this.s.idleVol * 0.2, 0.15);
   }
 
   /** where the train is across the set, -1 (listener's left) .. 1 (right); the range adapts to what the camera has seen */
@@ -89,7 +116,7 @@ export class TrainSound {
     const dt = this.lastT ? Math.min(0.2, now - this.lastT) : 0.033;
     this.lastT = now;
     this.speed = t.speed;
-    this.audio.setMuffle(t.tunnel);
+    this.audio.setMuffle(this.engine, t.tunnel);
     // curves squeal, straights do not; nothing while hidden in the tunnel
     if (now - this.lastSqueal > 0.1) {
       this.lastSqueal = now;
@@ -97,12 +124,12 @@ export class TrainSound {
       this.squeal = t.hidden ? 0 : this.s.squealVol * t.turn * Math.min(1, t.speed / (this.s.fullSpeed * 0.4));
       if (Math.abs(this.squeal - this.sqLevel) > 0.004 || this.squeal === 0 !== (this.sqLevel === 0)) {
         this.sqLevel = this.squeal;
-        this.audio.setSqueal(this.squeal, 0.85 + 0.3 * lv);
+        this.audio.setSqueal(this.engine, this.squeal, 0.85 + 0.3 * lv);
       }
       // pan follows the train; while it is hidden in the tunnel or lost, hold the last position
       if (t.present || t.hidden || this.seen) {
         if (t.present) this.lastPan = this.panOf(t, dt * 3);
-        if (Math.abs(this.lastPan - this.pan) > 0.01) { this.pan = this.lastPan; this.audio.setPan(this.pan); }
+        if (Math.abs(this.lastPan - this.pan) > 0.01) { this.pan = this.lastPan; this.audio.setPan(this.engine, this.pan); }
       }
     }
     const s = this.s;
@@ -114,17 +141,17 @@ export class TrainSound {
       this.mode = 'moving';
       this.movingSince = now;
       this.nextChuff = this.audio.ctx.currentTime + 0.03;
-      this.audio.stopSteam(0.9);
-      this.audio.setIdle(s.idleVol * 0.2, 1.2);
+      this.audio.stopSteam(this.engine, 0.9);
+      this.audio.setIdle(this.engine, s.idleVol * 0.2, 1.2);
     } else if (this.mode === 'moving' && this.belowSince && now - this.belowSince > s.stopDelay) {
       this.mode = 'stopped';
       const ranFor = now - this.movingSince;
       if (ranFor > 1.5 && now - this.lastSteam > 8) {
         this.lastSteam = now;
         this.steams++;
-        this.audio.steamRelease(s.steamVol);
+        this.audio.steamRelease(this.engine, s.steamVol);
       }
-      this.audio.setIdle(s.idleVol, 2.5);
+      this.audio.setIdle(this.engine, s.idleVol, 2.5);
     }
   }
 
@@ -141,7 +168,7 @@ export class TrainSound {
     // stones skittering: random, denser and a touch louder the faster it goes
     const sp = Math.min(1, level);
     if (Math.random() < (1.5 + 6 * sp) * 0.025) {
-      a.playRock(now + Math.random() * 0.025, s.rockVol * 0.4 * (0.4 + 0.6 * sp) * (0.5 + 0.5 * Math.random()) * settle, 0.8 + Math.random() * 0.45);
+      a.playRock(this.engine, now + Math.random() * 0.025, s.rockVol * 0.4 * (0.4 + 0.6 * sp) * (0.5 + 0.5 * Math.random()) * settle, 0.8 + Math.random() * 0.45);
     }
     // wagons: a wheel clack every time a wheel crosses a rail joint; more wagons, more axles, more clatter
     if (this.wagons > 0 && s.rollVol > 0) {
@@ -149,12 +176,12 @@ export class TrainSound {
       const body = Math.min(1, 0.45 + 0.17 * this.wagons);
       while (this.clackAcc >= 1) {
         this.clackAcc -= 1;
-        a.playClack(now + Math.random() * 0.024, s.rollVol * 0.5 * body * (0.3 + 0.7 * sp) * settle * (0.55 + 0.45 * Math.random()), 1.02 + Math.random() * 0.2);
+        a.playClack(this.engine, now + Math.random() * 0.024, s.rollVol * 0.5 * body * (0.3 + 0.7 * sp) * settle * (0.55 + 0.45 * Math.random()), 1.02 + Math.random() * 0.2);
       }
     } else this.clackAcc = 0;
     while (this.nextChuff < now + 0.1) {
       const gain = s.chuffVol * (0.22 + 0.78 * Math.min(1, level)) * settle * (0.9 + Math.random() * 0.1);
-      a.playChuff(this.nextChuff, gain, 0.97 + Math.random() * 0.06 + level * 0.03);
+      a.playChuff(this.engine, this.nextChuff, gain, 0.97 + Math.random() * 0.06 + level * 0.03);
       this.nextChuff += (1 / this.rate) * (0.96 + Math.random() * 0.08);
     }
   }

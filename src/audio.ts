@@ -1,4 +1,4 @@
-import { SAMPLES, ENGINES, type Engine, type EnvLayer, type WhistleParams } from './engines';
+import { SAMPLES, ENGINES, type Engine, type EngineVoice, type EnvLayer, type WhistleParams } from './engines';
 import { activeRegion, autoLoop, crossLoop, detectChuffs, mono, rms, scaleBuffer, sliceBuffer, snapStart } from './dsp';
 import { buildTexture, decimate, findTail, type Decimated, type Texture } from './texture';
 
@@ -43,41 +43,100 @@ function makeIR(ctx: BaseAudioContext, seconds: number, t60: number, dark: numbe
   return ir;
 }
 
+/** What a tunnel does to a train's sound (all adjustable in the app). */
+export interface TunnelCfg {
+  vol: number;     // level deep inside, 0..1 of the open-air level
+  cut: number;     // low-pass cutoff deep inside, Hz
+  lowCut: number;  // high-pass deep inside, Hz: takes the boom out of the reverb
+  verb: number;    // tunnel reverb send deep inside
+}
+export const DEFAULT_TUNNEL: TunnelCfg = { vol: 0.3, cut: 480, lowCut: 150, verb: 0.3 };
+
+/**
+ * One locomotive's own path to the speakers: whistle and engine sounds meet on a bus, then go through that engine's
+ * pan (where it is on the set), tunnel filters and tunnel reverb send. Two trains running at once each have one.
+ */
+class Channel {
+  readonly whistleIn: GainNode;
+  readonly voiceIn: GainNode;
+  readonly bus: GainNode;
+  readonly idleG: GainNode;
+  idleStarted = false;
+  steam?: { src: AudioBufferSourceNode; gain: GainNode };
+  squeal?: { src: AudioBufferSourceNode; gain: GainNode };
+  lastChuff: number[] = [];
+  tunnel = -1;
+  private pan: StereoPannerNode;
+  private hp: BiquadFilterNode;
+  private lp: BiquadFilterNode;
+  private vol: GainNode;
+  private roomSend: GainNode;
+  private tunSend: GainNode;
+
+  constructor(readonly ctx: BaseAudioContext, readonly id: string, voice: EngineVoice, master: AudioNode, room: AudioNode, tunnel: AudioNode, roomBase: number) {
+    this.whistleIn = ctx.createGain();
+    this.voiceIn = ctx.createGain();
+    this.bus = ctx.createGain();
+    this.idleG = ctx.createGain();
+    this.idleG.gain.value = 0;
+    const low = ctx.createBiquadFilter();
+    low.type = 'lowshelf'; low.frequency.value = 220; low.gain.value = voice.low;
+    const high = ctx.createBiquadFilter();
+    high.type = 'highshelf'; high.frequency.value = 2800; high.gain.value = voice.high;
+    this.voiceIn.connect(low).connect(high).connect(this.bus);
+    this.whistleIn.connect(this.bus);
+    this.idleG.connect(this.bus);
+    this.pan = ctx.createStereoPanner();
+    this.hp = ctx.createBiquadFilter(); this.hp.type = 'highpass'; this.hp.frequency.value = 20; this.hp.Q.value = 0.5;
+    this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 18000; this.lp.Q.value = 0.5;
+    this.vol = ctx.createGain();
+    this.bus.connect(this.pan).connect(this.hp).connect(this.lp).connect(this.vol).connect(master);
+    this.roomSend = ctx.createGain(); this.roomSend.gain.value = roomBase;
+    this.tunSend = ctx.createGain(); this.tunSend.gain.value = 0;
+    this.bus.connect(this.roomSend).connect(room);
+    this.bus.connect(this.tunSend).connect(tunnel);
+  }
+
+  setPan(p: number) { this.pan.pan.setTargetAtTime(Math.max(-1, Math.min(1, p)), this.ctx.currentTime, 0.12); }
+
+  /** c: 0 = open air, 1 = deep inside a tunnel. Quick: the sound should follow the train, not trail it. */
+  setTunnel(c: number, cfg: TunnelCfg, roomBase: number, force = false) {
+    if (!force && Math.abs(c - this.tunnel) < 0.004) return;
+    this.tunnel = c;
+    const t = this.ctx.currentTime, tc = 0.1;
+    this.lp.frequency.setTargetAtTime(18000 * Math.pow(Math.max(100, cfg.cut) / 18000, c), t, tc);
+    this.hp.frequency.setTargetAtTime(20 * Math.pow(Math.max(20, cfg.lowCut) / 20, c), t, tc);
+    this.vol.gain.setTargetAtTime(1 - (1 - cfg.vol) * c, t, tc);
+    this.tunSend.gain.setTargetAtTime(cfg.verb * c, t, tc * 2);
+    this.roomSend.gain.setTargetAtTime(roomBase * (1 - 0.85 * c), t, tc);
+  }
+}
+
 export class AudioEngine {
   ctx: BaseAudioContext;
   master: GainNode;
-  private muffleGain: GainNode;
-  private lowpass: BiquadFilterNode;
-  private whistleBus: GainNode;
-  private engineBus: GainNode;
+  private compressor: DynamicsCompressorNode;
   private envBus: GainNode;
-  private tunnelSend: GainNode;
+  private chans = new Map<string, Channel>();
+  private roomOut: GainNode;
+  tunnelCfg: TunnelCfg = { ...DEFAULT_TUNNEL };
+  roomLevel = 1;
   buffers = new Map<string, AudioBuffer>();
   private regions = new Map<string, Region>();
   private prepared = new Map<string, Prepared>();
   private held = new Map<string, Voice>();
   private oneShots = new Map<string, GainNode>();
 
-  private pan: StereoPannerNode;
-  private voiceIn: GainNode;
-  private engLow: BiquadFilterNode;
-  private engHigh: BiquadFilterNode;
   private voices = new Map<string, EngineSounds>();
-  private voiceId = ENGINES[0].id;
-  private lastMuffle = -1;
+  whistleLevel = 1;
   private masterLevel = 0.8;
   private suspendTimer = 0;
   muted = false;
   rocks: AudioBuffer[] = [];
   clacks: AudioBuffer[] = [];
   clackCount = 0;
-  private lastChuff: number[] = [];
-  private idleGain: GainNode;
-  private idleStarted = false;
   private idleBuf?: AudioBuffer;
-  private steam?: { src: AudioBufferSourceNode; gain: GainNode };
   private squealBuf?: AudioBuffer;
-  private squeal?: { src: AudioBufferSourceNode; gain: GainNode };
   private envLayers: { layer: EnvLayer; buf: AudioBuffer; gain: GainNode }[] = [];
   private envGroups = new Map<string, GainNode>();
   private envTimer = 0;
@@ -85,60 +144,55 @@ export class AudioEngine {
   rockCount = 0;
   failed: string[] = [];
 
-  // 'playback' asks for a bigger buffer: fewer glitches when the page is busy scrolling or analysing video
-  constructor(ctx: BaseAudioContext = new AudioContext({ latencyHint: 'playback' })) {
+  // 'interactive': the shortest delay the computer manages. The video link is already late; do not add to it.
+  constructor(ctx: BaseAudioContext = new AudioContext({ latencyHint: 'interactive' })) {
     this.ctx = ctx;
     this.master = ctx.createGain();
-    this.muffleGain = ctx.createGain();
-    this.lowpass = ctx.createBiquadFilter();
-    this.whistleBus = ctx.createGain();
-    this.engineBus = ctx.createGain();
     this.envBus = ctx.createGain();
-    this.idleGain = ctx.createGain();
-    this.tunnelSend = ctx.createGain();
-    this.lowpass.type = 'lowpass';
-    this.lowpass.frequency.value = 18000;
-    this.lowpass.Q.value = 0.6;
-    this.idleGain.gain.value = 0;
-    this.tunnelSend.gain.value = 0;
-    this.idleGain.connect(this.engineBus);
-
-    // each locomotive's chuffs and steam pass through a little tone shaping (body / bark) of their own
-    this.voiceIn = ctx.createGain();
-    this.engLow = ctx.createBiquadFilter();
-    this.engLow.type = 'lowshelf';
-    this.engLow.frequency.value = 220;
-    this.engHigh = ctx.createBiquadFilter();
-    this.engHigh.type = 'highshelf';
-    this.engHigh.frequency.value = 2800;
-    this.voiceIn.connect(this.engLow).connect(this.engHigh).connect(this.engineBus);
-
-    // dry path: buses -> pan (follows the train across the set) -> tunnel muffle -> master
-    this.pan = ctx.createStereoPanner();
-    this.whistleBus.connect(this.pan);
-    this.engineBus.connect(this.pan);
-    this.pan.connect(this.muffleGain);
-    this.muffleGain.connect(this.lowpass).connect(this.master);
+    // a gentle limiter so the engines can sit loud on the set without clipping when several sounds land together
+    this.compressor = ctx.createDynamicsCompressor();
+    this.compressor.threshold.value = -12;
+    this.compressor.knee.value = 14;
+    this.compressor.ratio.value = 5;
+    this.compressor.attack.value = 0.004;
+    this.compressor.release.value = 0.22;
     this.envBus.connect(this.master);
-    this.master.connect(ctx.destination);
+    this.master.connect(this.compressor).connect(ctx.destination);
 
-    // subtle room: a little more on the whistles (the horn needs air around it), less on the engine
+    // subtle room reverb shared by every engine (needs air around the horn)
     const room = ctx.createConvolver();
     room.buffer = makeIR(ctx, 2.4, 1.7, 0.4);
-    const wSend = ctx.createGain(); wSend.gain.value = 0.3;
-    const eSend = ctx.createGain(); eSend.gain.value = 0.1;
-    const roomOut = ctx.createGain(); roomOut.gain.value = 0.9;
-    this.whistleBus.connect(wSend).connect(room);
-    this.engineBus.connect(eSend).connect(room);
-    room.connect(roomOut).connect(this.muffleGain);
+    this.roomOut = ctx.createGain(); this.roomOut.gain.value = 0.9;
+    room.connect(this.roomOut).connect(this.master);
 
-    // tunnel: long, dark, flutter-echo reverb that swells in as the train goes inside
+    // tunnel: long, dark, flutter-echo reverb; thinned at the bottom so it does not boom
     const tunnel = ctx.createConvolver();
-    tunnel.buffer = makeIR(ctx, 4.2, 3.4, 0.85, [0.031, 0.062, 0.094, 0.127, 0.16, 0.2]);
-    const tOut = ctx.createGain(); tOut.gain.value = 1.1;
-    this.whistleBus.connect(this.tunnelSend);
-    this.engineBus.connect(this.tunnelSend);
-    this.tunnelSend.connect(tunnel).connect(tOut).connect(this.master);
+    tunnel.buffer = makeIR(ctx, 3.6, 2.8, 0.85, [0.031, 0.062, 0.094, 0.127, 0.16, 0.2]);
+    const tHp = ctx.createBiquadFilter(); tHp.type = 'highpass'; tHp.frequency.value = 160;
+    const tOut = ctx.createGain(); tOut.gain.value = 0.9;
+    tunnel.connect(tHp).connect(tOut).connect(this.master);
+
+    for (const e of ENGINES) this.chans.set(e.id, new Channel(ctx, e.id, e.voice, this.master, room, tunnel, this.roomBase(e.id)));
+  }
+
+  private roomBase(_id: string) { return 0.22 * this.roomLevel; }
+  private ch(id: string): Channel { return this.chans.get(id) ?? this.chans.values().next().value!; }
+
+  /** The mixer's room-reverb fader. */
+  setRoom(v: number) {
+    this.roomLevel = v;
+    for (const c of this.chans.values()) c.setTunnel(Math.max(0, c.tunnel), this.tunnelCfg, this.roomBase(c.id), true);
+  }
+
+  /** The mixer's whistle fader. */
+  setWhistleLevel(v: number) {
+    this.whistleLevel = v;
+    for (const c of this.chans.values()) c.whistleIn.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
+  }
+
+  setTunnelCfg(p: Partial<TunnelCfg>) {
+    Object.assign(this.tunnelCfg, p);
+    for (const c of this.chans.values()) c.setTunnel(Math.max(0, c.tunnel), this.tunnelCfg, this.roomBase(c.id), true);
   }
 
   resume() {
@@ -160,24 +214,13 @@ export class AudioEngine {
     }
   }
 
-  /** -1 (left) .. 1 (right): where the train is, as heard by the listener. */
-  setPan(p: number) {
-    this.pan.pan.setTargetAtTime(Math.max(-1, Math.min(1, p)), this.ctx.currentTime, 0.15);
-  }
+  /** -1 (left) .. 1 (right): where that engine is on the set, as heard by the listener. */
+  setPan(engine: string, p: number) { this.ch(engine).setPan(p); }
 
-  /** Which locomotive is on the track: picks its chuffs, steam release and tone. */
-  setVoice(id: string) {
-    const e = ENGINES.find((x) => x.id === id);
-    if (!e) return;
-    this.voiceId = id;
-    this.lastChuff = [];
-    const t = this.ctx.currentTime;
-    this.engLow.gain.setTargetAtTime(e.voice.low, t, 0.1);
-    this.engHigh.gain.setTargetAtTime(e.voice.high, t, 0.1);
-  }
+  /** 0 = in the open, 1 = deep in a tunnel, for that engine (its whistle follows it). */
+  setMuffle(engine: string, c: number) { this.ch(engine).setTunnel(c, this.tunnelCfg, this.roomBase(engine)); }
 
-  private get voice() { return ENGINES.find((x) => x.id === this.voiceId)!.voice; }
-  get chuffs(): AudioBuffer[] { return this.voices.get(this.voiceId)?.chuffs ?? []; }
+  get chuffs(): AudioBuffer[] { return this.voices.get(ENGINES[0].id)?.chuffs ?? []; }
 
   private async fetchBuf(url: string): Promise<AudioBuffer> {
     const res = await fetch(url);
@@ -355,7 +398,7 @@ export class AudioEngine {
     const voiceGain = ctx.createGain();
     voiceGain.gain.setValueAtTime(0, t0);
     voiceGain.gain.linearRampToValueAtTime(peak, t0 + attack);
-    voiceGain.connect(this.whistleBus);
+    voiceGain.connect(this.ch(engine.id).whistleIn);
 
     const srcs: AudioBufferSourceNode[] = [];
     const lfos: OscillatorNode[] = [];
@@ -421,7 +464,7 @@ export class AudioEngine {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = p.pitch;
-    src.connect(g).connect(this.whistleBus);
+    src.connect(g).connect(this.ch(engine.id).whistleIn);
     src.start(t0, r.a, r.b - r.a);
     src.stop(t0 + dur + 0.05);
     this.oneShots.set(engine.id, g);
@@ -488,71 +531,74 @@ export class AudioEngine {
 
   isHeld(id: string) { return this.held.has(id); }
 
-  // ---------- engine sounds ----------
-  playChuff(when: number, gain: number, rate = 1) {
-    const set = this.chuffs;
+  // ---------- engine sounds (each addressed to an engine's channel) ----------
+  playChuff(engine: string, when: number, gain: number, rate = 1) {
+    const set = this.voices.get(engine)?.chuffs ?? [];
     if (!set.length) return;
-    const v = this.voice;
+    const v = ENGINES.find((x) => x.id === engine)!.voice;
+    const ch = this.ch(engine);
     let idx = 0;
     for (let tries = 0; tries < 6; tries++) {
       idx = Math.floor(Math.random() * set.length);
-      if (!this.lastChuff.includes(idx)) break;
+      if (!ch.lastChuff.includes(idx)) break;
     }
-    this.lastChuff = [idx, ...this.lastChuff].slice(0, 3);
+    ch.lastChuff = [idx, ...ch.lastChuff].slice(0, 3);
     const src = this.ctx.createBufferSource();
     const g = this.ctx.createGain();
     src.buffer = set[idx];
     src.playbackRate.value = rate * v.pitch;
     g.gain.value = gain * v.level;
-    src.connect(g).connect(this.voiceIn);
+    src.connect(g).connect(ch.voiceIn);
     src.start(when);
     this.chuffCount++;
   }
 
   /** One wagon wheel over a rail joint. */
-  playClack(when: number, gain: number, rate = 1) {
+  playClack(engine: string, when: number, gain: number, rate = 1) {
     if (!this.clacks.length) return;
     const src = this.ctx.createBufferSource();
     const g = this.ctx.createGain();
     src.buffer = this.clacks[Math.floor(Math.random() * this.clacks.length)];
     src.playbackRate.value = rate;
     g.gain.value = gain;
-    src.connect(g).connect(this.engineBus);
+    src.connect(g).connect(this.ch(engine).bus);
     src.start(when);
     this.clackCount++;
   }
 
-  playRock(when: number, gain: number, rate = 1) {
+  playRock(engine: string, when: number, gain: number, rate = 1) {
     if (!this.rocks.length) return;
     const src = this.ctx.createBufferSource();
     const g = this.ctx.createGain();
     src.buffer = this.rocks[Math.floor(Math.random() * this.rocks.length)];
     src.playbackRate.value = rate;
     g.gain.value = gain;
-    src.connect(g).connect(this.engineBus);
+    src.connect(g).connect(this.ch(engine).bus);
     src.start(when);
     this.rockCount++;
   }
 
   /** Stationary ambience: loops forever, level eased with a long time constant. */
-  setIdle(level: number, tc = 1) {
+  setIdle(engine: string, level: number, tc = 1) {
     if (!this.idleBuf) return;
-    if (!this.idleStarted) {
+    const ch = this.ch(engine);
+    if (!ch.idleStarted) {
       const src = this.ctx.createBufferSource();
       src.buffer = this.idleBuf;
       src.loop = true;
-      src.connect(this.idleGain);
-      src.start();
-      this.idleStarted = true;
+      src.connect(ch.idleG);
+      src.start(0, Math.random() * this.idleBuf.duration);
+      ch.idleStarted = true;
     }
-    this.idleGain.gain.setTargetAtTime(level, this.ctx.currentTime, tc);
+    ch.idleG.gain.setTargetAtTime(level, this.ctx.currentTime, tc);
   }
 
   /** Rail squeal on curves: looped squeal stretch, high-passed so the crane's thump is left out. */
-  setSqueal(level: number, rate: number) {
+  setSqueal(engine: string, level: number, rate: number) {
     if (!this.squealBuf) return;
+    const ch = this.ch(engine);
     const t = this.ctx.currentTime;
-    if (!this.squeal) {
+    if (!ch.squeal) {
       const src = this.ctx.createBufferSource();
       src.buffer = this.squealBuf;
       src.loop = true;
@@ -564,47 +610,40 @@ export class AudioEngine {
       lp.frequency.value = 9000;
       const gain = this.ctx.createGain();
       gain.gain.value = 0;
-      src.connect(hp).connect(lp).connect(gain).connect(this.engineBus);
+      src.connect(hp).connect(lp).connect(gain).connect(ch.bus);
       src.start(0, Math.random() * this.squealBuf.duration);
-      this.squeal = { src, gain };
+      ch.squeal = { src, gain };
     }
-    this.squeal.gain.gain.setTargetAtTime(level, t, 0.4);
-    this.squeal.src.playbackRate.setTargetAtTime(rate, t, 0.6);
+    ch.squeal.gain.gain.setTargetAtTime(level, t, 0.4);
+    ch.squeal.src.playbackRate.setTargetAtTime(rate, t, 0.6);
   }
 
-  steamRelease(level: number) {
-    const buf = this.voices.get(this.voiceId)?.steam;
+  steamRelease(engine: string, level: number) {
+    const buf = this.voices.get(engine)?.steam;
     if (!buf) return;
-    this.stopSteam(0.3);
+    const v = ENGINES.find((x) => x.id === engine)!.voice;
+    const ch = this.ch(engine);
+    this.stopSteam(engine, 0.3);
     const src = this.ctx.createBufferSource();
     const gain = this.ctx.createGain();
     src.buffer = buf;
-    src.playbackRate.value = this.voice.pitch;
-    gain.gain.value = level * this.voice.level * this.voice.steamTrim;
-    src.connect(gain).connect(this.voiceIn);
+    src.playbackRate.value = v.pitch;
+    gain.gain.value = level * v.level * v.steamTrim;
+    src.connect(gain).connect(ch.voiceIn);
     src.start();
-    this.steam = { src, gain };
+    ch.steam = { src, gain };
   }
 
-  stopSteam(fade = 0.8) {
-    if (!this.steam) return;
-    const { src, gain } = this.steam;
+  stopSteam(engine: string, fade = 0.8) {
+    const ch = this.ch(engine);
+    if (!ch.steam) return;
+    const { src, gain } = ch.steam;
     const t = this.ctx.currentTime;
     gain.gain.cancelScheduledValues(t);
     gain.gain.setValueAtTime(gain.gain.value, t);
     gain.gain.linearRampToValueAtTime(0, t + fade);
     src.stop(t + fade + 0.05);
-    this.steam = undefined;
-  }
-
-  /** 0 = open, 1 = deep in tunnel (low-pass, slight level drop, long dark reverb swells in). */
-  setMuffle(c: number) {
-    if (Math.abs(c - this.lastMuffle) < 0.004) return; // tracker calls this every frame: skip no-ops
-    this.lastMuffle = c;
-    const t = this.ctx.currentTime;
-    this.lowpass.frequency.setTargetAtTime(18000 * Math.pow(550 / 18000, c), t, 0.3);
-    this.muffleGain.gain.setTargetAtTime(1 - 0.3 * c, t, 0.3);
-    this.tunnelSend.gain.setTargetAtTime(0.85 * c, t, 0.5);
+    ch.steam = undefined;
   }
 
   // ---------- environment ----------

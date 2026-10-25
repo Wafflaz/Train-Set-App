@@ -168,7 +168,9 @@ const PHONE_PAGE = /* html */ `<!doctype html>
     const my = ++gen;
     if (pc) { try { pc.close(); } catch (e) {} }
     pc = new RTCPeerConnection({ iceServers: [] });
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    stream.getTracks().forEach((t) => { try { t.contentHint = 'motion'; } catch (e) {} pc.addTrack(t, stream); });
+    // keep the frame rate up rather than the sharpness: late frames are worse than soft ones
+    pc.getSenders().forEach((s) => { try { const p = s.getParameters(); p.degradationPreference = 'maintain-framerate'; if (p.encodings && p.encodings[0]) p.encodings[0].maxBitrate = 3000000; s.setParameters(p).catch(() => {}); } catch (e) {} });
     await pc.setLocalDescription(await pc.createOffer());
     await gathered(pc, 2500);
     const id = Math.random().toString(36).slice(2);
