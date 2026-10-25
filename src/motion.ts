@@ -11,6 +11,7 @@ export interface Track {
   tunnel: number;       // 0..1 how far into the tunnel (drives the low-pass)
   turn: number;         // 0..1 how hard the train is curving (drives rail squeal)
   area: number;         // blob area as fraction of frame
+  len: number;          // length of the whole moving group (loco + anything following it), in frame-widths
 }
 
 export class TrainTracker {
@@ -39,6 +40,11 @@ export class TrainTracker {
   private last = { x: 0.5, y: 0.5, t: -1e9, speed: 0 };
   diffCanvas = document.createElement('canvas');
   bbox: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  /** union of the main blob and the moving fragments close to it: the whole train, wagons included */
+  span: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  private spare: Uint8Array[] = [];
+  private comps: { area: number; x0: number; y0: number; x1: number; y1: number }[] = [];
+  private img?: ImageData;
 
   constructor() {
     this.canvas.width = this.diffCanvas.width = this.w;
@@ -46,6 +52,7 @@ export class TrainTracker {
   }
 
   reset() {
+    this.spare.push(...this.ring);
     this.ring = []; this.hist = []; this.head = []; this.turnS = 0; this.speedS = 0; this.last.t = -1e9; this.last.speed = 0;
   }
 
@@ -61,17 +68,19 @@ export class TrainTracker {
     const { w, h } = this;
     this.ctx.drawImage(src, 0, 0, w, h);
     const data = this.ctx.getImageData(0, 0, w, h).data;
-    const gray = new Uint8Array(w * h);
+    const gray = this.spare.pop() ?? new Uint8Array(w * h);
     for (let i = 0; i < gray.length; i++) gray[i] = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
     this.ring.push(gray);
-    while (this.ring.length > this.lag + 1) this.ring.shift();
+    while (this.ring.length > this.lag + 1) this.spare.push(this.ring.shift()!);
 
     const dt = this.lastT ? Math.min(0.2, now - this.lastT) : 0.033;
     this.lastT = now;
     let blob: { x: number; y: number; area: number } | null = null;
     this.bbox = null;
+    this.span = null;
     const dctx = this.diffCanvas.getContext('2d')!;
-    const img = dctx.createImageData(w, h);
+    const img = (this.img ??= dctx.createImageData(w, h));
+    img.data.fill(0);
 
     if (this.ring.length > this.lag) {
       const ref = this.ring[0];
@@ -156,7 +165,9 @@ export class TrainTracker {
 
     const dist = this.tunnelDist(this.last.x, this.last.y);
     const tunnelAmt = hidden ? 1 : present || sinceSeen < 0.6 ? Math.max(0, Math.min(1, 1 - dist / this.tunnel.ramp)) : 0;
-    return { present, hidden, x: this.last.x, y: this.last.y, speed: speedOut, tunnel: tunnelAmt, turn: this.turnS, area: blob ? blob.area / (w * h) : 0 };
+    const sp = this.span as TrainTracker['span']; // set inside largestBlob(), which the compiler cannot see through
+    const len = present && sp ? Math.hypot(sp.x1 - sp.x0 + 1, sp.y1 - sp.y0 + 1) / w : 0;
+    return { present, hidden, x: this.last.x, y: this.last.y, speed: speedOut, tunnel: tunnelAmt, turn: this.turnS, area: blob ? blob.area / (w * h) : 0, len };
   }
 
   private regressSpeed(): number {
@@ -181,7 +192,9 @@ export class TrainTracker {
   private largestBlob(): { x: number; y: number; area: number } | null {
     const { w, h } = this;
     this.label.fill(0);
+    this.comps.length = 0;
     let best: { x: number; y: number; area: number } | null = null;
+    let bestIdx = -1;
     let id = 0;
     for (let s = 0; s < w * h; s++) {
       if (!this.mask2[s] || this.label[s]) continue;
@@ -199,10 +212,31 @@ export class TrainTracker {
         if (y > 0 && this.mask2[i - w] && !this.label[i - w]) { this.label[i - w] = id; this.stack[sp++] = i - w; }
         if (y < h - 1 && this.mask2[i + w] && !this.label[i + w]) { this.label[i + w] = id; this.stack[sp++] = i + w; }
       }
+      if (this.comps.length < 64) this.comps.push({ area, x0, y0, x1, y1 });
       if (!best || area > best.area) {
         best = { x: sx / area, y: sy / area, area };
         this.bbox = { x0, y0, x1, y1 };
+        bestIdx = this.comps.length - 1;
       }
+    }
+    if (best && bestIdx >= 0) {
+      // frame differencing lights up a long train as separate pieces (leading edge, trailing edge, detail):
+      // gather the pieces near the main blob to measure the train's whole length
+      const u = { ...this.comps[bestIdx] };
+      const link = 0.26 * w;
+      const minPiece = Math.max(3, this.minArea * 0.2);
+      for (let pass = 0; pass < 2; pass++) {
+        for (const c of this.comps) {
+          if (c.area < minPiece) continue;
+          const gx = Math.max(c.x0 - u.x1, u.x0 - c.x1, 0);
+          const gy = Math.max(c.y0 - u.y1, u.y0 - c.y1, 0);
+          if (Math.hypot(gx, gy) <= link) {
+            u.x0 = Math.min(u.x0, c.x0); u.y0 = Math.min(u.y0, c.y0);
+            u.x1 = Math.max(u.x1, c.x1); u.y1 = Math.max(u.y1, c.y1);
+          }
+        }
+      }
+      this.span = u;
     }
     return best;
   }

@@ -12,6 +12,8 @@ interface Prepared {
   match: number;    // average quality of the joins inside the sustain (1 = seamless)
   tex: Texture; buf: AudioBuffer;
 }
+/** One locomotive's own chuffs and steam release. */
+interface EngineSounds { chuffs: AudioBuffer[]; steam?: AudioBuffer }
 interface Voice {
   prep: Prepared; pitch: number; loopT: number; xf: number; t0: number; peak: number; attack: number;
   voiceGain: GainNode; loop: AudioBufferSourceNode; loopGain: GainNode;
@@ -56,13 +58,23 @@ export class AudioEngine {
   private held = new Map<string, Voice>();
   private oneShots = new Map<string, GainNode>();
 
-  chuffs: AudioBuffer[] = [];
+  private pan: StereoPannerNode;
+  private voiceIn: GainNode;
+  private engLow: BiquadFilterNode;
+  private engHigh: BiquadFilterNode;
+  private voices = new Map<string, EngineSounds>();
+  private voiceId = ENGINES[0].id;
+  private lastMuffle = -1;
+  private masterLevel = 0.8;
+  private suspendTimer = 0;
+  muted = false;
   rocks: AudioBuffer[] = [];
+  clacks: AudioBuffer[] = [];
+  clackCount = 0;
   private lastChuff: number[] = [];
   private idleGain: GainNode;
   private idleStarted = false;
   private idleBuf?: AudioBuffer;
-  private steamBuf?: AudioBuffer;
   private steam?: { src: AudioBufferSourceNode; gain: GainNode };
   private squealBuf?: AudioBuffer;
   private squeal?: { src: AudioBufferSourceNode; gain: GainNode };
@@ -73,7 +85,8 @@ export class AudioEngine {
   rockCount = 0;
   failed: string[] = [];
 
-  constructor(ctx: BaseAudioContext = new AudioContext()) {
+  // 'playback' asks for a bigger buffer: fewer glitches when the page is busy scrolling or analysing video
+  constructor(ctx: BaseAudioContext = new AudioContext({ latencyHint: 'playback' })) {
     this.ctx = ctx;
     this.master = ctx.createGain();
     this.muffleGain = ctx.createGain();
@@ -90,9 +103,21 @@ export class AudioEngine {
     this.tunnelSend.gain.value = 0;
     this.idleGain.connect(this.engineBus);
 
-    // dry path: buses -> tunnel muffle -> master
-    this.whistleBus.connect(this.muffleGain);
-    this.engineBus.connect(this.muffleGain);
+    // each locomotive's chuffs and steam pass through a little tone shaping (body / bark) of their own
+    this.voiceIn = ctx.createGain();
+    this.engLow = ctx.createBiquadFilter();
+    this.engLow.type = 'lowshelf';
+    this.engLow.frequency.value = 220;
+    this.engHigh = ctx.createBiquadFilter();
+    this.engHigh.type = 'highshelf';
+    this.engHigh.frequency.value = 2800;
+    this.voiceIn.connect(this.engLow).connect(this.engHigh).connect(this.engineBus);
+
+    // dry path: buses -> pan (follows the train across the set) -> tunnel muffle -> master
+    this.pan = ctx.createStereoPanner();
+    this.whistleBus.connect(this.pan);
+    this.engineBus.connect(this.pan);
+    this.pan.connect(this.muffleGain);
     this.muffleGain.connect(this.lowpass).connect(this.master);
     this.envBus.connect(this.master);
     this.master.connect(ctx.destination);
@@ -116,7 +141,43 @@ export class AudioEngine {
     this.tunnelSend.connect(tunnel).connect(tOut).connect(this.master);
   }
 
-  resume() { return (this.ctx as AudioContext).resume?.() ?? Promise.resolve(); }
+  resume() {
+    if (this.muted) return Promise.resolve(); // sound is off: leave the context asleep
+    return (this.ctx as AudioContext).resume?.() ?? Promise.resolve();
+  }
+
+  /** Sound off: fade out, then suspend the context so it costs no CPU. Sound on: wake it and fade back in. */
+  async setMuted(m: boolean) {
+    this.muted = m;
+    clearTimeout(this.suspendTimer);
+    const ctx = this.ctx as AudioContext;
+    if (m) {
+      this.master.gain.setTargetAtTime(0, ctx.currentTime, 0.06);
+      this.suspendTimer = window.setTimeout(() => { if (this.muted) void ctx.suspend?.(); }, 500);
+    } else {
+      await ctx.resume?.();
+      this.master.gain.setTargetAtTime(this.masterLevel, ctx.currentTime, 0.08);
+    }
+  }
+
+  /** -1 (left) .. 1 (right): where the train is, as heard by the listener. */
+  setPan(p: number) {
+    this.pan.pan.setTargetAtTime(Math.max(-1, Math.min(1, p)), this.ctx.currentTime, 0.15);
+  }
+
+  /** Which locomotive is on the track: picks its chuffs, steam release and tone. */
+  setVoice(id: string) {
+    const e = ENGINES.find((x) => x.id === id);
+    if (!e) return;
+    this.voiceId = id;
+    this.lastChuff = [];
+    const t = this.ctx.currentTime;
+    this.engLow.gain.setTargetAtTime(e.voice.low, t, 0.1);
+    this.engHigh.gain.setTargetAtTime(e.voice.high, t, 0.1);
+  }
+
+  private get voice() { return ENGINES.find((x) => x.id === this.voiceId)!.voice; }
+  get chuffs(): AudioBuffer[] { return this.voices.get(this.voiceId)?.chuffs ?? []; }
 
   private async fetchBuf(url: string): Promise<AudioBuffer> {
     const res = await fetch(url);
@@ -140,21 +201,60 @@ export class AudioEngine {
       if (!this.buffers.has(e.sample)) this.buffers.set(e.sample, await this.fetchBuf(`${SAMPLES.whistleDir}/${e.sample}.mp3`));
     }));
     let done = 0;
-    const total = 4 + SAMPLES.rocks.length + SAMPLES.env.length;
+    const voiceUrls = [...new Set(ENGINES.flatMap((e) => [e.voice.chuff.url, e.voice.steam.url]))];
+    const total = 2 + voiceUrls.length + SAMPLES.clacks.length + SAMPLES.rocks.length + SAMPLES.env.length;
     const opt = async (url: string) => { const b = await this.fetchOpt(url); onProgress?.(++done, total); return b; };
-    const [chuffSrc, steamSrc, idleSrc, squealSrc, ...rest] = await Promise.all([
-      opt(SAMPLES.chuff.url), opt(SAMPLES.steam.url), opt(SAMPLES.idle.url), opt(SAMPLES.squeal.url),
+    const [idleSrc, squealSrc, ...rest] = await Promise.all([
+      opt(SAMPLES.idle.url), opt(SAMPLES.squeal.url),
+      ...voiceUrls.map((u) => opt(u)),
+      ...SAMPLES.clacks.map((c) => opt(c.url)),
       ...SAMPLES.rocks.map((r) => opt(r.url)),
       ...SAMPLES.env.map((l) => opt(l.url)),
     ]);
-    const rockSrcs = rest.slice(0, SAMPLES.rocks.length);
-    const envSrcs = rest.slice(SAMPLES.rocks.length);
+    const voiceSrcs = new Map(voiceUrls.map((u, i) => [u, rest[i]] as const));
+    let at = voiceUrls.length;
+    const clackSrcs = rest.slice(at, (at += SAMPLES.clacks.length));
+    const rockSrcs = rest.slice(at, (at += SAMPLES.rocks.length));
+    const envSrcs = rest.slice(at);
 
-    // single exhaust beats, level-matched, soft edges
-    if (chuffSrc) {
-      const onsets = detectChuffs(chuffSrc, SAMPLES.chuff.from, SAMPLES.chuff.to);
-      this.chuffs = this.levelMatch(onsets.map((t) => sliceBuffer(chuffSrc, t - 0.025, 0.34, 0.012, 0.12)));
+    // each locomotive: single exhaust beats (level-matched, soft edges) and its own steam release
+    this.voices.clear();
+    for (const e of ENGINES) {
+      const cs = voiceSrcs.get(e.voice.chuff.url);
+      const ss = voiceSrcs.get(e.voice.steam.url);
+      const chuffs = cs
+        ? this.levelMatch(detectChuffs(cs, e.voice.chuff.from, e.voice.chuff.to).map((t) => sliceBuffer(cs, t - 0.025, 0.34, 0.012, 0.12)))
+        : [];
+      const steam = ss ? sliceBuffer(ss, e.voice.steam.from, e.voice.steam.len, 0.15, Math.min(3.5, e.voice.steam.len * 0.4)) : undefined;
+      this.voices.set(e.id, { chuffs, steam });
     }
+    // bring every engine to the loudness of the reference (Pug) so only the character differs
+    const ref = this.voices.get('pug');
+    const med = (bs: AudioBuffer[]) => { const l = bs.map(rms).sort((x, y) => x - y); return l[Math.floor(l.length / 2)] || 0; };
+    const refChuff = ref ? med(ref.chuffs) : 0;
+    const refSteam = ref?.steam ? rms(ref.steam) : 0;
+    const fit = (g: number) => Math.max(0.3, Math.min(4, g));
+    const limit = (b: AudioBuffer, peak: number) => {
+      let p = 0;
+      for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let i = 0; i < d.length; i++) p = Math.max(p, Math.abs(d[i])); }
+      if (p > peak) scaleBuffer(b, peak / p);
+    };
+    for (const v of this.voices.values()) {
+      const m = med(v.chuffs);
+      if (refChuff && m) for (const b of v.chuffs) scaleBuffer(b, fit(refChuff / m));
+      if (refSteam && v.steam) scaleBuffer(v.steam, fit(refSteam / (rms(v.steam) || 1)));
+      for (const b of v.chuffs) limit(b, 0.85); // a hot slice must not clip when several overlap
+      if (v.steam) limit(v.steam, 0.85);
+    }
+
+    // wheel clacks of wagons going over rail joints (from steam goods trains passing)
+    const wc: AudioBuffer[] = [];
+    clackSrcs.forEach((buf, i) => {
+      if (!buf) return;
+      const { from, to } = SAMPLES.clacks[i];
+      for (const t of detectChuffs(buf, from, to, 0.04)) wc.push(sliceBuffer(buf, t - 0.004, 0.14, 0.003, 0.08));
+    });
+    this.clacks = this.levelMatch(wc.length > 360 ? wc.filter((_, i) => i % Math.ceil(wc.length / 360) === 0) : wc);
 
     // little stone clacks
     const clacks: AudioBuffer[] = [];
@@ -164,8 +264,6 @@ export class AudioEngine {
       for (const t of detectChuffs(buf, from, to, 0.07)) clacks.push(sliceBuffer(buf, t - 0.006, 0.16, 0.004, 0.09));
     });
     this.rocks = this.levelMatch(clacks);
-
-    if (steamSrc) this.steamBuf = sliceBuffer(steamSrc, SAMPLES.steam.from, SAMPLES.steam.len, 0.15, 3.5);
 
     if (idleSrc) {
       const sr = idleSrc.sampleRate;
@@ -203,7 +301,10 @@ export class AudioEngine {
     return slices;
   }
 
-  setMaster(v: number) { this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02); }
+  setMaster(v: number) {
+    this.masterLevel = v;
+    if (!this.muted) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
+  }
 
   // ---------- whistle ----------
   region(sample: string): Region {
@@ -389,21 +490,36 @@ export class AudioEngine {
 
   // ---------- engine sounds ----------
   playChuff(when: number, gain: number, rate = 1) {
-    if (!this.chuffs.length) return;
+    const set = this.chuffs;
+    if (!set.length) return;
+    const v = this.voice;
     let idx = 0;
     for (let tries = 0; tries < 6; tries++) {
-      idx = Math.floor(Math.random() * this.chuffs.length);
+      idx = Math.floor(Math.random() * set.length);
       if (!this.lastChuff.includes(idx)) break;
     }
     this.lastChuff = [idx, ...this.lastChuff].slice(0, 3);
     const src = this.ctx.createBufferSource();
     const g = this.ctx.createGain();
-    src.buffer = this.chuffs[idx];
+    src.buffer = set[idx];
+    src.playbackRate.value = rate * v.pitch;
+    g.gain.value = gain * v.level;
+    src.connect(g).connect(this.voiceIn);
+    src.start(when);
+    this.chuffCount++;
+  }
+
+  /** One wagon wheel over a rail joint. */
+  playClack(when: number, gain: number, rate = 1) {
+    if (!this.clacks.length) return;
+    const src = this.ctx.createBufferSource();
+    const g = this.ctx.createGain();
+    src.buffer = this.clacks[Math.floor(Math.random() * this.clacks.length)];
     src.playbackRate.value = rate;
     g.gain.value = gain;
     src.connect(g).connect(this.engineBus);
     src.start(when);
-    this.chuffCount++;
+    this.clackCount++;
   }
 
   playRock(when: number, gain: number, rate = 1) {
@@ -457,13 +573,15 @@ export class AudioEngine {
   }
 
   steamRelease(level: number) {
-    if (!this.steamBuf) return;
+    const buf = this.voices.get(this.voiceId)?.steam;
+    if (!buf) return;
     this.stopSteam(0.3);
     const src = this.ctx.createBufferSource();
     const gain = this.ctx.createGain();
-    src.buffer = this.steamBuf;
-    gain.gain.value = level;
-    src.connect(gain).connect(this.engineBus);
+    src.buffer = buf;
+    src.playbackRate.value = this.voice.pitch;
+    gain.gain.value = level * this.voice.level * this.voice.steamTrim;
+    src.connect(gain).connect(this.voiceIn);
     src.start();
     this.steam = { src, gain };
   }
@@ -481,6 +599,8 @@ export class AudioEngine {
 
   /** 0 = open, 1 = deep in tunnel (low-pass, slight level drop, long dark reverb swells in). */
   setMuffle(c: number) {
+    if (Math.abs(c - this.lastMuffle) < 0.004) return; // tracker calls this every frame: skip no-ops
+    this.lastMuffle = c;
     const t = this.ctx.currentTime;
     this.lowpass.frequency.setTargetAtTime(18000 * Math.pow(550 / 18000, c), t, 0.3);
     this.muffleGain.gain.setTargetAtTime(1 - 0.3 * c, t, 0.3);

@@ -13,10 +13,14 @@
 html { background: var(--green-dd); }
 body {
   margin: 0; color: var(--cream); font: 14px/1.4 var(--sans);
+  background: var(--green-dd);
+  min-height: 100vh;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; will-change: transform;
   background:
     repeating-linear-gradient(0deg, rgba(0,0,0,.06) 0 2px, transparent 2px 46px),
-    radial-gradient(ellipse at 50% -10%, #226048 0%, var(--green-dd) 62%) fixed;
-  min-height: 100vh;
+    radial-gradient(ellipse at 50% -10%, #226048 0%, var(--green-dd) 62%);
 }
 .loco { max-width: 1200px; margin: 0 auto; padding: 18px 16px 28px; }
 
@@ -85,6 +89,8 @@ button.enamel:active:not(:disabled) { transform: translateY(1px); }
   background: #0f2a1d; color: var(--cream-d); border: 2px solid var(--black); padding: 5px 12px; cursor: pointer;
   font: 700 11px var(--sans); letter-spacing: .1em; text-transform: uppercase;
 }
+.seg + .seg { border-left: 0; }
+.seg-group { flex-wrap: wrap; }
 .seg:first-of-type { border-radius: 4px 0 0 4px; }
 .seg:last-of-type { border-radius: 0 4px 4px 0; border-left: 0; }
 .seg.active { background: var(--brass); color: var(--black); box-shadow: inset 0 0 6px rgba(0,0,0,.35); }
@@ -131,7 +137,8 @@ details[open] > summary { color: var(--gold); }
 }
 .video { position: relative; aspect-ratio: 4 / 3; background: #000; border: 3px solid var(--black); border-radius: 6px; overflow: hidden; }
 .video video, .video canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.video canvas#diff { opacity: .65; mix-blend-mode: screen; image-rendering: pixelated; }
+.video canvas#diff { opacity: .55; image-rendering: pixelated; pointer-events: none; }
+.video canvas#overlay { touch-action: none; }
 
 .lamps { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 6px; }
 .lamp {
@@ -144,13 +151,14 @@ details[open] > summary { color: var(--gold); }
 .lamp.lit::before { background: var(--c); box-shadow: 0 0 9px 2px var(--c); }
 
 .gauges { display: flex; justify-content: space-around; gap: 8px; margin: 10px 0; }
-.gauge { width: 31%; max-width: 128px; filter: drop-shadow(0 4px 5px rgba(0,0,0,.55)); }
+.gauge { width: 31%; max-width: 128px; aspect-ratio: 1; border-radius: 50%; box-shadow: 0 4px 8px rgba(0,0,0,.55); }
 .gauge svg { width: 100%; display: block; }
 .needle { transition: transform .22s ease-out; transform: rotate(-135deg); transform-origin: 50px 50px; }
 #readout { font: 12px ui-monospace, Menlo, monospace; color: var(--gold); background: #07140d; border: 2px solid #000; border-radius: 3px; padding: 6px 8px; word-break: break-word; }
 
 /* ---- whistle cab plates ---- */
 .card {
+  content-visibility: auto; contain-intrinsic-size: auto 330px;
   position: relative; background: linear-gradient(180deg, #14382a, #102d21); border: 2px solid var(--black); border-radius: 8px;
   padding: 10px 12px 8px; margin-bottom: 14px; box-shadow: 0 0 0 1.5px var(--cream-d), 0 4px 8px rgba(0,0,0,.4);
   transition: box-shadow .15s, border-color .15s;
@@ -184,3 +192,16 @@ canvas.wave { width: 100%; height: 56px; display: block; margin: 6px 0 2px; back
 
 footer { margin-top: 8px; text-align: center; color: var(--cream-d); font: 600 10px var(--sans); letter-spacing: .24em; text-transform: uppercase; opacity: .75; }
 @media (max-width: 520px) { .sl label { grid-template-columns: 110px 1fr 44px; } .nameplate h1 { font-size: 24px; } .nameplate { padding: 8px 28px 10px; } }
+
+/* ---- sound switch, locomotive picker, wagons, phone link ---- */
+.brass-btn.small { font-size: 12px; padding: 9px 16px; letter-spacing: .12em; }
+.brass-btn.off { background: linear-gradient(135deg, #e6a79f, #a8322a 50%, #c85a50); color: #fff; }
+.onTrack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 12px; }
+.onTrack select { max-width: 100%; }
+.mini { font: 600 11px/1.35 var(--sans); letter-spacing: .04em; color: var(--cream-d); }
+.mono { font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--gold); word-break: break-all; }
+.phone-box { background: #07140d; border: 2px solid #000; border-radius: 6px; padding: 8px 10px; margin-bottom: 12px; }
+.phone-box .mono { font-size: 15px; margin: 4px 0 6px; user-select: all; }
+#phone-status { font: 600 12px var(--sans); color: var(--cream); }
+.card.track { border-color: var(--gold); }
+.card.track .cabplate::after { content: "on the track"; font: 700 9px var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--orange); align-self: center; }

@@ -2,7 +2,7 @@ import type { Tunnel } from './motion';
 
 // Simulated train on a loop so the whole chain (tracking, chuffs, steam, tunnel) can be tried without hardware.
 // Cycle: rest, accelerate, run, brake, rest. The train is hidden while behind the tunnel wall on the left.
-export function startDemo(step: (src: CanvasImageSource) => void, tunnel: Tunnel) {
+export function startDemo(step: (src: CanvasImageSource) => void, tunnel: Tunnel, wagons: () => number = () => 0) {
   const W = 320, H = 240;
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
@@ -31,13 +31,22 @@ export function startDemo(step: (src: CanvasImageSource) => void, tunnel: Tunnel
     g.fillStyle = '#2a2622';
     g.fillRect(0, 0, W * Math.min(tunnel.x1, 0.2), H); // cardboard wall
 
-    const x = 0.5 + 0.45 * Math.cos(theta);
-    const y = (0.5 + 0.12 * Math.sin(theta)) * (H / W);
+    const at = (th: number) => ({ x: 0.5 + 0.45 * Math.cos(th), y: (0.5 + 0.12 * Math.sin(th)) * (H / W) });
+    const { x, y } = at(theta);
     if (x > tunnel.x1 - 0.06) {
       g.fillStyle = '#1d1a18';
       g.fillRect(x * W - 14, y * W - 6, 28, 12);
       g.fillStyle = '#b84a2a';
       g.fillRect(x * W - 14, y * W - 6, 9, 12);
+    }
+    // wagons follow behind the loco
+    for (let i = 1; i <= wagons(); i++) {
+      const w = at(theta - 0.19 * i);
+      if (w.x <= tunnel.x1 - 0.06) continue;
+      g.fillStyle = i % 2 ? '#5b4636' : '#6d6a5f';
+      g.fillRect(w.x * W - 11, w.y * W - 5, 22, 10);
+      g.fillStyle = '#2a2622';
+      g.fillRect(w.x * W - 11, w.y * W - 5, 22, 2);
     }
     step(cv);
   };
